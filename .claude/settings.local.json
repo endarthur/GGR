@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda run -n ggr pytest tests/test_gslib_validation.py::TestGSLIBValidation::test_variogram_covariance -v)",
+      "Bash(conda run -n ggr pytest:*)",
+      "Bash(conda run:*)",
+      "Bash(del test_simple_krig.py)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

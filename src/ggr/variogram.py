@@ -56,6 +56,11 @@ class Variogram:
     
     def _validate(self) -> None:
         """Validate variogram parameters."""
+        valid_models = ['spherical', 'exponential', 'gaussian', 'linear', 'power']
+        if self.model not in valid_models:
+            raise ValueError(
+                f"Model must be one of {valid_models}, got '{self.model}'"
+            )
         if self.sill <= 0:
             raise ValueError("Sill must be positive")
         if self.nugget < 0:
@@ -89,19 +94,127 @@ class Variogram:
     def covariance(self, h: NDArray) -> NDArray:
         """
         Calculate covariance for given distances.
-        
+
+        Covariance is calculated as C(h) = sill - gamma(h),
+        where gamma(h) is the variogram value at distance h.
+
         Parameters
         ----------
         h : ndarray
-            Distances
-        
+            Distances (scalar or array)
+
         Returns
         -------
         ndarray
             Covariance values
+
+        Notes
+        -----
+        At h=0, returns sill (not sill-nugget). The nugget effect
+        is included in the variogram calculation for h>0.
+
+        Variogram models:
+        - Spherical: gamma(h) = nugget + (sill-nugget) * [1.5*(h/a) - 0.5*(h/a)^3] for h<a
+                                       = sill for h>=a
+        - Exponential: gamma(h) = nugget + (sill-nugget) * [1 - exp(-h/a)]
+        - Gaussian: gamma(h) = nugget + (sill-nugget) * [1 - exp(-(h/a)^2)]
         """
-        # TODO: Implement covariance calculation for each model type
-        raise NotImplementedError("Covariance calculation not yet implemented")
+        h = np.atleast_1d(h).astype(float)
+
+        # At h=0, covariance = sill
+        gamma = np.zeros_like(h)
+
+        # For h > 0, calculate variogram value based on model
+        nonzero = h > 0
+
+        if self.model == 'spherical':
+            gamma[nonzero] = self._spherical_variogram(h[nonzero])
+        elif self.model == 'exponential':
+            gamma[nonzero] = self._exponential_variogram(h[nonzero])
+        elif self.model == 'gaussian':
+            gamma[nonzero] = self._gaussian_variogram(h[nonzero])
+        else:
+            raise ValueError(f"Model '{self.model}' not yet implemented")
+
+        # Covariance = sill - gamma
+        return self.sill - gamma
+
+    def _spherical_variogram(self, h: NDArray) -> NDArray:
+        """
+        Calculate spherical variogram values.
+
+        Parameters
+        ----------
+        h : ndarray
+            Distances (must be > 0)
+
+        Returns
+        -------
+        ndarray
+            Variogram values
+        """
+        # Use the first range value (isotropic case)
+        a = self.range[0]
+        h_norm = h / a
+
+        # gamma = nugget + (sill-nugget) * f(h)
+        # where f(h) = 1.5*(h/a) - 0.5*(h/a)^3 for h < a
+        #            = 1.0 for h >= a
+        gamma = np.full_like(h, self.sill)  # h >= a case
+
+        within_range = h < a
+        if np.any(within_range):
+            h_norm_wr = h_norm[within_range]
+            f_h = 1.5 * h_norm_wr - 0.5 * h_norm_wr**3
+            gamma[within_range] = self.nugget + (self.sill - self.nugget) * f_h
+
+        return gamma
+
+    def _exponential_variogram(self, h: NDArray) -> NDArray:
+        """
+        Calculate exponential variogram values.
+
+        Parameters
+        ----------
+        h : ndarray
+            Distances (must be > 0)
+
+        Returns
+        -------
+        ndarray
+            Variogram values
+        """
+        # Use the first range value (isotropic case)
+        a = self.range[0]
+
+        # gamma = nugget + (sill-nugget) * [1 - exp(-h/a)]
+        f_h = 1.0 - np.exp(-h / a)
+        gamma = self.nugget + (self.sill - self.nugget) * f_h
+
+        return gamma
+
+    def _gaussian_variogram(self, h: NDArray) -> NDArray:
+        """
+        Calculate gaussian variogram values.
+
+        Parameters
+        ----------
+        h : ndarray
+            Distances (must be > 0)
+
+        Returns
+        -------
+        ndarray
+            Variogram values
+        """
+        # Use the first range value (isotropic case)
+        a = self.range[0]
+
+        # gamma = nugget + (sill-nugget) * [1 - exp(-(h/a)^2)]
+        f_h = 1.0 - np.exp(-(h / a)**2)
+        gamma = self.nugget + (self.sill - self.nugget) * f_h
+
+        return gamma
     
     def __repr__(self) -> str:
         return (

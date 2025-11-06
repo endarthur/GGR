@@ -135,7 +135,23 @@ class BaseKrige:
         # Parse grid
         grid_obj = parse_grid(grid)
         points = grid_obj.points
-        
+
+        # Handle dimensionality mismatch between data and grid
+        data_ndim = self.data_coords.shape[1]
+        grid_ndim = points.shape[1]
+
+        if grid_ndim < data_ndim:
+            # Grid is lower dimension than data (e.g., 2D grid, 3D data)
+            # Pad grid points with zeros
+            padding = np.zeros((len(points), data_ndim - grid_ndim))
+            points = np.column_stack([points, padding])
+        elif grid_ndim > data_ndim:
+            # Grid is higher dimension than data
+            raise ValueError(
+                f"Grid dimensionality ({grid_ndim}) exceeds data dimensionality ({data_ndim}). "
+                f"Cannot estimate {grid_ndim}D points from {data_ndim}D data."
+            )
+
         # Initialize outputs
         n_points = len(points)
         estimates = np.full(n_points, np.nan)
@@ -222,26 +238,121 @@ class SimpleKrige(BaseKrige):
         self.mean = mean
     
     def _krige_point(self, point: NDArray, return_diagnostics: bool = False) -> Dict:
-        """Perform Simple Kriging at a single point."""
-        # TODO: Implement Simple Kriging algorithm
-        # 1. Find neighbors
-        # 2. Build covariance matrix
-        # 3. Solve kriging system
-        # 4. Calculate estimate and variance
-        
+        """
+        Perform Simple Kriging at a single point.
+
+        Simple Kriging system:
+        C * w = C0
+
+        Where:
+        - C is the covariance matrix between data points (n x n)
+        - w is the weights vector (n x 1)
+        - C0 is the covariance vector between data and estimation point (n x 1)
+
+        Estimate: z*(x0) = mean + sum(wi * (zi - mean))
+        Variance: sigma^2 = C(0,0) - sum(wi * C0i)
+        """
+        # 1. Find neighbors using isotropic search
+        # For now, we just use radius search from kdtree
+        max_radius = self.search.radius[0] if len(self.search.radius) > 0 else self.search.radius
+
+        # Query neighbors within search radius
+        indices = self.kdtree.query_ball_point(point, r=max_radius)
+
+        # Check minimum points requirement
+        if len(indices) < self.search.min_points:
+            result = {
+                'estimate': np.nan,
+                'variance': np.nan,
+            }
+            if return_diagnostics:
+                result.update({
+                    'n_samples': len(indices),
+                    'mean_distance': np.nan,
+                    'slope': np.nan,
+                    'efficiency': np.nan,
+                })
+            return result
+
+        # Limit to max_points (use closest if too many)
+        if len(indices) > self.search.max_points:
+            # Calculate distances and sort
+            dists = np.linalg.norm(self.data_coords[indices] - point, axis=1)
+            sorted_idx = np.argsort(dists)
+            indices = [indices[i] for i in sorted_idx[:self.search.max_points]]
+
+        # Get neighbor coordinates and values
+        neighbor_coords = self.data_coords[indices]
+        neighbor_values = self.data_values[indices]
+        n_neighbors = len(indices)
+
+        # 2. Build covariance matrix C (between data points)
+        C = np.zeros((n_neighbors, n_neighbors))
+        for i in range(n_neighbors):
+            for j in range(i, n_neighbors):
+                # Calculate distance
+                h = np.linalg.norm(neighbor_coords[i] - neighbor_coords[j])
+                # Calculate covariance
+                cov = self.variogram.covariance(np.array([h]))[0]
+                C[i, j] = cov
+                C[j, i] = cov  # Symmetric
+
+        # 3. Build covariance vector C0 (between data and estimation point)
+        C0 = np.zeros(n_neighbors)
+        for i in range(n_neighbors):
+            h = np.linalg.norm(neighbor_coords[i] - point)
+            C0[i] = self.variogram.covariance(np.array([h]))[0]
+
+        # 4. Solve kriging system: C * weights = C0
+        try:
+            weights = np.linalg.solve(C, C0)
+        except np.linalg.LinAlgError:
+            # Singular matrix - return NaN
+            result = {
+                'estimate': np.nan,
+                'variance': -1.0,  # Flag for singular matrix
+            }
+            if return_diagnostics:
+                result.update({
+                    'n_samples': n_neighbors,
+                    'mean_distance': np.nan,
+                    'slope': np.nan,
+                    'efficiency': np.nan,
+                })
+            return result
+
+        # 5. Calculate estimate
+        # z*(x0) = mean + sum(wi * (zi - mean))
+        residuals = neighbor_values - self.mean
+        estimate = self.mean + np.sum(weights * residuals)
+
+        # 6. Calculate kriging variance
+        # sigma^2 = C(0,0) - sum(wi * C0i)
+        C00 = self.variogram.covariance(np.array([0.0]))[0]  # Covariance at zero distance
+        variance = C00 - np.sum(weights * C0)
+
+        # Build result
         result = {
-            'estimate': np.nan,
-            'variance': np.nan,
+            'estimate': estimate,
+            'variance': variance,
         }
-        
+
         if return_diagnostics:
+            # Calculate diagnostics
+            mean_dist = np.mean(np.linalg.norm(neighbor_coords - point, axis=1))
+            efficiency = 1.0 - variance / C00 if C00 > 0 else 0.0
+
+            # Slope of regression (for OK this should be ~1)
+            # For SK, we can compute sum of weights (should be close to 1 if data centered)
+            slope = np.sum(weights)
+
             result.update({
-                'n_samples': 0,
-                'mean_distance': np.nan,
-                'slope': np.nan,
-                'efficiency': np.nan,
+                'n_samples': n_neighbors,
+                'mean_distance': mean_dist,
+                'slope': slope,
+                'efficiency': efficiency,
             })
-        
+
         return result
 
 
@@ -273,26 +384,138 @@ class OrdinaryKrige(BaseKrige):
         super().__init__(variogram, search_radius, max_points, min_points)
     
     def _krige_point(self, point: NDArray, return_diagnostics: bool = False) -> Dict:
-        """Perform Ordinary Kriging at a single point."""
-        # TODO: Implement Ordinary Kriging algorithm
-        # 1. Find neighbors
-        # 2. Build covariance matrix (with Lagrange multiplier)
-        # 3. Solve kriging system
-        # 4. Calculate estimate and variance
-        
+        """
+        Perform Ordinary Kriging at a single point.
+
+        Ordinary Kriging system:
+        [C   1] [w]   [C0]
+        [1^T 0] [μ] = [1 ]
+
+        Where:
+        - C is the covariance matrix between data points (n x n)
+        - w is the weights vector (n x 1)
+        - μ is the Lagrange multiplier (unbiasedness constraint)
+        - C0 is the covariance vector between data and estimation point (n x 1)
+
+        Estimate: z*(x0) = sum(wi * zi)
+        Variance: sigma^2 = C(0,0) - sum(wi * C0i) - μ
+        """
+        # 1. Find neighbors using isotropic search
+        max_radius = self.search.radius[0] if len(self.search.radius) > 0 else self.search.radius
+
+        # Query neighbors within search radius
+        indices = self.kdtree.query_ball_point(point, r=max_radius)
+
+        # Check minimum points requirement
+        if len(indices) < self.search.min_points:
+            result = {
+                'estimate': np.nan,
+                'variance': np.nan,
+            }
+            if return_diagnostics:
+                result.update({
+                    'n_samples': len(indices),
+                    'mean_distance': np.nan,
+                    'slope': np.nan,
+                    'efficiency': np.nan,
+                    'lagrange_multiplier': np.nan,
+                })
+            return result
+
+        # Limit to max_points (use closest if too many)
+        if len(indices) > self.search.max_points:
+            # Calculate distances and sort
+            dists = np.linalg.norm(self.data_coords[indices] - point, axis=1)
+            sorted_idx = np.argsort(dists)
+            indices = [indices[i] for i in sorted_idx[:self.search.max_points]]
+
+        # Get neighbor coordinates and values
+        neighbor_coords = self.data_coords[indices]
+        neighbor_values = self.data_values[indices]
+        n_neighbors = len(indices)
+
+        # 2. Build covariance matrix C (between data points)
+        C = np.zeros((n_neighbors, n_neighbors))
+        for i in range(n_neighbors):
+            for j in range(i, n_neighbors):
+                # Calculate distance
+                h = np.linalg.norm(neighbor_coords[i] - neighbor_coords[j])
+                # Calculate covariance
+                cov = self.variogram.covariance(np.array([h]))[0]
+                C[i, j] = cov
+                C[j, i] = cov  # Symmetric
+
+        # 3. Build covariance vector C0 (between data and estimation point)
+        C0 = np.zeros(n_neighbors)
+        for i in range(n_neighbors):
+            h = np.linalg.norm(neighbor_coords[i] - point)
+            C0[i] = self.variogram.covariance(np.array([h]))[0]
+
+        # 4. Build augmented system for Ordinary Kriging
+        # [C   1] [w]   [C0]
+        # [1^T 0] [μ] = [1 ]
+        A = np.zeros((n_neighbors + 1, n_neighbors + 1))
+        A[:n_neighbors, :n_neighbors] = C
+        A[:n_neighbors, n_neighbors] = 1.0  # Last column
+        A[n_neighbors, :n_neighbors] = 1.0  # Last row
+        A[n_neighbors, n_neighbors] = 0.0   # Bottom-right corner
+
+        b = np.zeros(n_neighbors + 1)
+        b[:n_neighbors] = C0
+        b[n_neighbors] = 1.0
+
+        # 5. Solve kriging system
+        try:
+            solution = np.linalg.solve(A, b)
+            weights = solution[:n_neighbors]
+            lagrange = solution[n_neighbors]
+        except np.linalg.LinAlgError:
+            # Singular matrix - return NaN
+            result = {
+                'estimate': np.nan,
+                'variance': -1.0,  # Flag for singular matrix
+            }
+            if return_diagnostics:
+                result.update({
+                    'n_samples': n_neighbors,
+                    'mean_distance': np.nan,
+                    'slope': np.nan,
+                    'efficiency': np.nan,
+                    'lagrange_multiplier': np.nan,
+                })
+            return result
+
+        # 6. Calculate estimate
+        # z*(x0) = sum(wi * zi)
+        estimate = np.sum(weights * neighbor_values)
+
+        # 7. Calculate kriging variance
+        # sigma^2 = C(0,0) - sum(wi * C0i) - μ
+        C00 = self.variogram.covariance(np.array([0.0]))[0]
+        variance = C00 - np.sum(weights * C0) - lagrange
+
+        # Build result
         result = {
-            'estimate': np.nan,
-            'variance': np.nan,
+            'estimate': estimate,
+            'variance': variance,
         }
-        
+
         if return_diagnostics:
+            # Calculate diagnostics
+            mean_dist = np.mean(np.linalg.norm(neighbor_coords - point, axis=1))
+            efficiency = 1.0 - variance / C00 if C00 > 0 else 0.0
+
+            # Slope of regression (sum of weights should be ~1 for OK)
+            slope = np.sum(weights)
+
             result.update({
-                'n_samples': 0,
-                'mean_distance': np.nan,
-                'slope': np.nan,
-                'efficiency': np.nan,
+                'n_samples': n_neighbors,
+                'mean_distance': mean_dist,
+                'slope': slope,
+                'efficiency': efficiency,
+                'lagrange_multiplier': lagrange,
             })
-        
+
         return result
 
 

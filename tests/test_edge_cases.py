@@ -197,12 +197,12 @@ class TestInputOutputTypes:
             'z': np.random.rand(20),
             'value': np.random.rand(20)
         })
-        
+
         variogram = {'model': 'spherical', 'range': 0.5, 'sill': 1.0}
         grid = {'xmin': 0, 'xmax': 1, 'nx': 5,
                 'ymin': 0, 'ymax': 1, 'ny': 5,
-                'zmin': 0, 'xmax': 1, 'nz': 5}
-        
+                'zmin': 0, 'zmax': 1, 'nz': 5}
+
         result = ggr.krige(df, variogram, grid)
         assert isinstance(result, np.ndarray)
     
