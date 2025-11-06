@@ -398,7 +398,7 @@ def build_rotation_matrix(dip_direction, dip, rake):
 1. Spatial indexing (KDTree) - critical
 2. Vectorized operations where possible
 3. Efficient matrix solving (scipy)
-4. (Future) Web Workers for parallelization
+4. (Future) Possible Pyodide worker threads (experimental, limited browser support)
 
 ### 7.2 Scalability Limits
 
@@ -416,9 +416,11 @@ def build_rotation_matrix(dip_direction, dip, rake):
 ### Post v1.0
 
 **Performance**:
-- Web Workers for parallelization
-- Progressive rendering
 - Chunked processing for large grids
+- Progressive result updates
+- Memory-efficient implementations
+
+**Note on Parallelization**: Traditional Python multiprocessing doesn't work in Pyodide/browser environment. Pyodide has experimental web worker support for running Python in parallel, but this is not a v1 priority. Single-threaded performance is acceptable for target use cases.
 
 **Features**:
 - Cross-validation tools
@@ -438,7 +440,7 @@ def build_rotation_matrix(dip_direction, dip, rake):
 
 **By Design**:
 - No CRS/projection support (use external tools)
-- No parallel processing in v1 (single-threaded)
+- No parallel processing in v1 (single-threaded - Python multiprocessing unavailable in browser)
 - Pure Python (slower than compiled code)
 - Limited to Pyodide-compatible dependencies
 
