@@ -1,7 +1,5 @@
 # GGR - Geostatistical Grid Realization
 
-**Gamma Gamma Revolution** 💚
-
 Modern geostatistics in Python - kriging and simulation for the browser and beyond.
 
 ## Features
@@ -166,4 +164,4 @@ Built on the shoulders of giants:
 
 ---
 
-**GGR** - Bringing geostatistics to the browser, one gamma at a time 💚
+**GGR** - Bringing geostatistics to the browser
